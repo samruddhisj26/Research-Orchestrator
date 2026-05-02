@@ -1,0 +1,223 @@
+# Research Orchestrator
+
+An autonomous multi-agent system that drives a publication-quality ML/AI research project from idea to submission. One command (`./run.sh`) detects where you are, routes each task to the cheapest model that can handle it, and advances to the next phase automatically.
+
+```
+./run.sh /path/to/your/research-project
+```
+
+## How it works
+
+The orchestrator reads your project directory, checks which files exist to determine the current research phase, then dispatches work to the right agent:
+
+| Agent | Invocation | Used for | Why this agent |
+|-------|-----------|----------|----------------|
+| **Claude API** | Anthropic Python SDK | Synthesis, quality gates, writing | Best judgment and reasoning |
+| **Gemini CLI** | `gemini --yolo -p "..."` | Paper screening, data extraction, dataset prep | Cheapest per-token for bulk work |
+| **Codex CLI** | `codex exec "..."` | Experiment code, figures, LaTeX tables | Purpose-built for code generation |
+
+The orchestrator is **idempotent** — re-running never repeats completed work. It stops only when it hits a phase that requires your GPU compute, then tells you exactly what to run.
+
+## Prerequisites
+
+- **Python 3.11+**
+- **Claude CLI / API key** — `export ANTHROPIC_API_KEY=sk-ant-...`
+- **Gemini CLI** — [install instructions](https://github.com/google-gemini/gemini-cli)
+- **Codex CLI** — [install instructions](https://github.com/openai/codex)
+
+The orchestrator auto-creates a `.venv` and installs `anthropic` on first run.
+
+## Quick start
+
+```bash
+# 1. Clone this repo
+git clone <repo-url> ~/Research/research-orchestrator
+
+# 2. Set up a research project (or use an existing one)
+cd ~/Research/my-paper
+# Fill in research-spec.md with your hypotheses, method, datasets, venue
+
+# 3. Run the orchestrator
+~/Research/research-orchestrator/run.sh .
+
+# Or from inside the project directory:
+~/Research/research-orchestrator/run.sh
+```
+
+You can also create a thin wrapper in each project:
+
+```bash
+# my-paper/run.sh
+#!/usr/bin/env bash
+bash "$(dirname "$0")/../research-orchestrator/run.sh" "$(dirname "$0")" "$@"
+```
+
+## Research phases
+
+The orchestrator manages 8 phases, each gated by file existence:
+
+```
+Phase 0  │ Setup         │ Fill research-spec.md                    │ You
+Phase 1  │ Validation    │ Council simulation → search queries      │ Claude
+Phase 2A │ Screening     │ 3 parallel Gemini sessions (papers 1-180)│ Gemini × 3
+Phase 2B │ Extraction    │ Structured data from included papers     │ Gemini
+Phase 2C │ Synthesis     │ Literature synthesis + related work draft│ Claude
+Phase 2G │ Gate          │ Hypothesis review (santa-loop)           │ Claude
+Phase 3A │ Code spec     │ Fill code-spec.md from research-spec     │ Claude
+Phase 3B │ Code gen      │ Codex + Gemini in parallel               │ Codex + Gemini
+Phase 3D │ Code review   │ Correctness, leakage, reproducibility    │ Claude
+Phase 4  │ Experiments   │ Run on your compute (manual)             │ You
+Phase 5A │ Analysis      │ Statistical tests, p-values, effect sizes│ Claude
+Phase 5B │ Figures       │ Publication-quality plots + LaTeX tables │ Codex
+Phase 5G │ Gate          │ Results review (santa-loop)              │ Claude
+Phase 6  │ Writing       │ Methods → Results → Related → Intro → Draft│ Claude
+Phase 7  │ Review loop   │ Adversarial dual-reviewer, auto-revise  │ Claude
+Phase 8  │ Submission    │ Checklist with pass/fail status          │ Internal
+```
+
+### Gate phases
+
+Phases marked **Gate** run a simulated dual-reviewer assessment. If both reviewers score Weak Accept or above, a `.gate-*` marker file is written and the orchestrator advances. If a gate fails, it prints the reviewers' specific objections and exits — fix the issues and re-run.
+
+### Manual phases
+
+- **Phase 0**: You fill in `research-spec.md`
+- **Phase 4**: You run experiments on your GPU cluster
+
+Everything else is automated.
+
+## Phase detection
+
+State is tracked entirely by **file existence** — no database, no checkpoints file:
+
+```
+research-spec.md filled?           → Phase 1+
+literature/search-queries.md?      → Phase 2+
+literature/screening-batch-{1,2,3}.csv? → Phase 2B+
+literature/extraction-data.json?   → Phase 2C+
+literature/synthesis.md?           → Phase 2G+
+.gate-lit-passed?                  → Phase 3+
+code/code-spec.md filled?          → Phase 3B+
+code/model.py?                     → Phase 3D+
+.gate-code-reviewed?               → Phase 4+
+results/*.csv?                     → Phase 5+
+.gate-results-passed?              → Phase 6+
+writing/draft.md filled?           → Phase 7+
+.gate-draft-passed?                → Phase 8
+```
+
+To re-run a phase, delete its marker file:
+
+```bash
+rm .gate-results-passed && ~/Research/research-orchestrator/run.sh .
+```
+
+## Project structure (expected in your research directory)
+
+```
+my-paper/
+├── research-spec.md              # You fill this in
+├── run.sh                        # Thin wrapper calling the orchestrator
+├── literature/
+│   ├── search-queries.md         # Generated by Phase 1
+│   ├── screening-batch-{1,2,3}.csv  # Generated by Phase 2A (Gemini)
+│   ├── extraction-data.json      # Generated by Phase 2B (Gemini)
+│   └── synthesis.md              # Generated by Phase 2C (Claude)
+├── code/
+│   ├── code-spec.md              # Generated by Phase 3A (Claude)
+│   ├── model.py                  # Generated by Phase 3B (Codex)
+│   ├── baselines.py              #   "
+│   ├── train.py                  #   "
+│   ├── evaluate.py               #   "
+│   ├── visualize.py              #   "
+│   └── run_experiments.sh        #   "
+├── results/
+│   ├── run_*.csv                 # Your experiment outputs
+│   ├── analysis.md               # Generated by Phase 5A (Claude)
+│   ├── figures/                  # Generated by Phase 5B (Codex)
+│   └── tables.tex                #   "
+├── writing/
+│   ├── methods.md                # Generated by Phase 6A (Claude)
+│   ├── results.md                # Generated by Phase 6B
+│   ├── related-work.md           # Generated by Phase 2C, polished in 6C
+│   ├── intro.md                  # Generated by Phase 6D (written last)
+│   └── draft.md                  # Assembled by Phase 6E
+└── .gate-*                       # Phase gate markers (auto-generated)
+```
+
+## Orchestrator repo structure
+
+```
+research-orchestrator/
+├── run.sh                        # Entry point (bash)
+├── requirements.txt              # anthropic>=0.40.0
+├── orchestrator/
+│   ├── run.py                    # Phase dispatcher + CLI handling
+│   ├── state.py                  # Phase detection + gate file management
+│   ├── config.py                 # Model routing table + timeouts
+│   ├── errors.py                 # Exception hierarchy
+│   ├── git_utils.py              # git add/commit helpers
+│   ├── logging_utils.py          # Banners + phase-prefixed logging
+│   ├── agents/
+│   │   ├── claude_agent.py       # Anthropic SDK wrapper
+│   │   ├── gemini_agent.py       # gemini CLI subprocess + parallel runner
+│   │   └── codex_agent.py        # codex exec subprocess
+│   ├── phases/
+│   │   ├── phase_1.py            # Council + search queries
+│   │   ├── phase_2.py            # Screening, extraction, synthesis, gate
+│   │   ├── phase_3.py            # Code spec, generation, review gate
+│   │   ├── phase_5.py            # Analysis, figures, results gate
+│   │   ├── phase_6.py            # Writing pipeline (Methods→Intro→Draft)
+│   │   ├── phase_7.py            # Adversarial review loop
+│   │   └── phase_8.py            # Submission checklist
+│   └── tests/
+│       └── test_state.py         # 20 unit tests
+```
+
+## CLI options
+
+```bash
+# Run targeting current directory
+./run.sh
+
+# Run targeting a specific project
+./run.sh /path/to/my-paper
+
+# Dry run — show which phase/agent would execute
+./run.sh --dry-run
+
+# Combine
+./run.sh /path/to/my-paper --dry-run
+```
+
+## Model routing rationale
+
+| Task type | Agent | Why |
+|-----------|-------|-----|
+| Paper screening (180 abstracts) | Gemini | Bulk classification, cheapest per-token |
+| Data extraction from papers | Gemini | Structured extraction at scale |
+| Dataset download + prep | Gemini | File I/O heavy, no deep reasoning needed |
+| Experiment code generation | Codex | Purpose-built for code, avoids burning Claude tokens |
+| Figure generation | Codex | matplotlib/seaborn code is routine |
+| Literature synthesis | Claude | Requires semantic understanding across papers |
+| Quality gates (santa-loop) | Claude | Nuanced reviewer simulation needs strong reasoning |
+| Paper writing (all sections) | Claude | Publication-quality prose requires best available model |
+| Code review | Claude | Reasoning about correctness, leakage, fairness |
+
+## Running tests
+
+```bash
+cd research-orchestrator
+.venv/bin/python -m pytest orchestrator/tests/ -v
+```
+
+## Environment variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `ANTHROPIC_API_KEY` | Yes (for Claude phases) | Anthropic API key |
+| `RESEARCH_ROOT` | Auto-set by run.sh | Path to the research project directory |
+
+## License
+
+MIT
